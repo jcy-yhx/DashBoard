@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ConnectWallet } from "@/components/connect-wallet";
 import { PortfolioOverview } from "@/components/portfolio-overview";
+import { NetWorthChart } from "@/components/net-worth-chart";
 import { TokenList } from "@/components/token-list";
+import { PositionsList } from "@/components/positions-list";
 import { useWallet } from "@/hooks/use-wallet";
 
 export default function Home() {
@@ -53,7 +54,9 @@ export default function Home() {
       {isConnected && data && (
         <div className="space-y-6">
           <PortfolioOverview data={data} />
+          <NetWorthChart wallet={address!} />
           <TokenList balances={data.tokenBalances} />
+          <PositionsList positions={data.positions} />
         </div>
       )}
     </main>

@@ -4,21 +4,21 @@ import { getPortfolio } from "@/application/portfolio/get-portfolio";
 import { AdapterRegistry } from "@/infrastructure/web3/adapters/registry";
 import { LidoAdapter } from "@/infrastructure/web3/adapters/lido";
 import { AaveV3Adapter } from "@/infrastructure/web3/adapters/aave-v3";
+import { UniswapV3Adapter } from "@/infrastructure/web3/adapters/uniswap-v3";
 import { getClient } from "@/infrastructure/web3/client";
 import { toUserFriendlyMessage } from "@/lib/errors";
 
-// Singleton registry — adapter instances are cached across requests
 let registryInstance: AdapterRegistry | null = null;
 
 function getRegistry(): AdapterRegistry {
   if (registryInstance) return registryInstance;
 
-  const client = getClient(1); // Ethereum mainnet
+  const client = getClient(1);
   const registry = new AdapterRegistry();
 
-  // Register protocol adapters (add new protocols here)
   registry.register(new LidoAdapter(client));
   registry.register(new AaveV3Adapter(client));
+  registry.register(new UniswapV3Adapter(client));
 
   registryInstance = registry;
   return registry;
