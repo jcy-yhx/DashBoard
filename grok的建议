@@ -1,0 +1,172 @@
+以下是针对你 DeFi Dashboard 的真实 Code Review / Architecture Review 级别的系统设计。完全基于单人、4-6 周 MVP、求职展示目标，聚焦高性价比和高印象分设计。
+1. 推荐系统架构（Clean Architecture + Layered）
+推荐采用分层 + 垂直切片结合的架构：
+
+Presentation Layer：Next.js App Router (Server Components + Server Actions) + TanStack Query (客户端状态)
+Application Layer：Application Services（Use Cases），纯业务编排，无技术细节
+Domain Layer：核心领域模型（Position、TokenBalance、ProtocolPosition、YieldOpportunity 等）
+Infrastructure Layer：Adapters（ViemAdapter、PostgresAdapter、PriceOracleAdapter、ProtocolAdapter）
+Indexing Layer：独立 Worker / API Route（可后期拆成单独服务）
+
+关键决策与 Tradeoff：
+
+全 TypeScript + Zod 做端到端类型安全（强烈推荐，面试官极爱）。
+Postgres 作为唯一真实数据源（避免 Redis 增加复杂度）。
+不使用 The Graph（省时间，但你需要自己写 indexing pipeline，这正是展示数据建模和工程能力的点）。
+采用 Repository + Adapter 模式 而非直接在 Service 里调用 viem/prisma。
+Server-First：大量数据聚合、USD 计算放在 Server Component / Route Handler，减少客户端 bundle 和 RPC 调用。
+
+最能打动面试官：画出清晰的 Clean Architecture 圈层图 + 数据流图（Indexing → Domain → Application → Presentation），并在代码中严格遵守依赖倒置原则。
+2. 最值得做的功能（MVP 优先级排序）
+核心 MVP（必须做，占 70% 精力）：
+
+Wallet 连接 + Portfolio Overview（总价值、资产分布饼图、24h 变化）
+Token Balances（多链或至少 Ethereum + Arbitrum，支持隐藏小额）
+DeFi Positions（Aave V3 Lending/Borrowing、Uniswap V3 LP、Pendle 等 2-3 个代表性协议）
+历史净值曲线（每日快照，展示 indexing 能力）
+Yield Opportunities（简单列表 + APY，从链上或静态适配器读取）
+
+高印象分加分项（选 1-2 个）：
+
+Health Factor / Risk 展示（Aave）
+Impermanent Loss 估算（Uniswap LP）
+模拟操作（模拟 Supply / Swap，展示 transaction crafting）
+
+浪费时间的功能（坚决不做）：
+
+NFT 显示、复杂交易执行、社交分享、移动端适配、暗黑模式切换、多语言、用户系统（auth）。
+
+3. 最应该避免的复杂度
+
+实时价格订阅（WebSocket）→ 用定时 + cache 代替
+多链全覆盖（先做 Ethereum 主网，Arbitrum 作为第二链即可）
+完整 MEV / Gas 优化模块
+自建价格预言机（直接用 Chainlink + Coingecko fallback）
+复杂权限 / 多钱包管理
+前端状态机（XState 等）
+
+真实工程原则：在 MVP 阶段，“能 work + 可扩展” > “完美抽象”。过早抽象是最大杀手。
+4. 最能体现高级工程能力的模块
+
+Indexing Pipeline（最推荐重点投入）
+Portfolio Aggregation Engine（核心算法）
+Protocol Adapter 体系（可扩展性）
+Domain Events + Snapshot 机制
+
+这些模块能让你在面试中深度讨论数据一致性、幂等性、错误处理、重试机制、backfill 等真实问题。
+5. 如何设计 Adapter 层（强烈建议）
+TypeScript// 核心接口
+interface ProtocolAdapter {
+  getPositions(wallet: Address): Promise<ProtocolPosition[]>;
+  getYieldOpportunities(): Promise<YieldOpportunity[]>;
+  // 可选：parseEvent(logs: Log[])
+}
+
+interface PriceAdapter {
+  getPrices(tokens: Address[]): Promise<Map<Address, number>>;
+}
+
+interface BlockchainAdapter {
+  getTokenBalances(wallet: Address): Promise<TokenBalance[]>;
+}
+实现：
+
+每个协议一个文件（adapters/aave-v3.ts、adapters/uniswap-v3.ts）
+使用 viem 的 publicClient 作为底层
+通过 Dependency Injection（或简单工厂）注入
+Tradeoff：抽象 vs 简单 —— MVP 阶段可以接受部分 Adapter 直接返回 raw 数据，在 Application Service 里做转换。
+
+面试官会喜欢你讲“如何通过 Adapter 实现协议快速接入”和“如何处理不同协议数据模型的归一化”。
+6. 如何设计 Indexing Pipeline
+推荐架构：
+
+Event-driven + Periodic Snapshot 结合
+使用 Postgres 表：
+raw_events（可选，用于重放）
+token_balances（wallet, token, balance, block）
+positions（wallet, protocol, position_type, data jsonb, block）
+portfolio_snapshots（wallet, date, total_usd, data jsonb）
+
+
+实现方式（单人友好）：
+
+Next.js API Route /api/index + Vercel Cron（或 GitHub Actions）
+每次 indexing 只处理 latestBlock - 1000 到 latestBlock 的增量
+使用 viem 的 watchBlockNumber 或 getLogs + fromBlock/toBlock
+Idempotency：以 (wallet, block, protocol) 作为 unique key
+
+关键展示点：Backfill 机制、失败重试、数据一致性保证（最终一致性即可）。
+7. 如何做 Portfolio Aggregation
+核心难点：不同资产计价 + 去重 + 风险聚合。
+推荐流程（在 Application Service 中）：
+
+从 Postgres 读取最新 balances + positions
+调用 PriceAdapter 获取 USD 价格
+Domain Model 计算：
+Token holdings
+LP Positions（√(x*y) * 2 * price 估算）
+Lending/Borrowing（supply - borrow）
+
+聚合成 Portfolio 实体（含 totalValue, allocation, pnl）
+
+高级点：
+
+使用 jsonb 存储协议原始数据，计算层只存标准化字段
+实现 PortfolioCalculator 类，方便单元测试
+缓存聚合结果（portfolio_cache 表，TTL 5-10 分钟）
+
+8. 如何在项目中体现“工程成熟度”
+
+严格的类型 + Zod 校验（Request/Response/Domain）
+错误处理分层（DomainError → ApplicationError → UI friendly）
+单元测试（重点测 Aggregation Engine 和 Adapters）
+Logging + Observability（简单 pino + 关键路径 trace）
+配置管理（环境变量 + Zod schema）
+README 包含 Architecture Decision Records (ADR) 简版
+CI（至少 type check + lint）
+
+这些比功能本身更能体现 senior 潜力。
+9. 面试官会重点追问什么
+
+Indexing 的延迟、数据准确性、如何处理 reorg
+Portfolio 计算在价格波动时的准确性
+如何扩展新协议（Adapter 设计）
+Gas 消耗考虑、RPC 限频处理
+数据库 schema 演化策略
+如果有用户量激增怎么 scale（你应该回答：先垂直 scale + read replica，后拆服务）
+
+准备好画图解释数据流和 tradeoff。
+10. Realistic MVP Roadmap（5 周版）
+Week 1：
+
+项目脚手架（Next.js + TS + Prisma + viem + Tailwind + TanStack Query）
+Wallet 连接 + 基础 Portfolio Overview 页面
+Token Balance fetching & display
+
+Week 2：
+
+Postgres schema 设计 + Prisma models
+Core Adapter 框架 + Aave V3 Adapter
+Basic Indexing pipeline（token balances）
+
+Week 3：
+
+Uniswap V3 LP Adapter
+Portfolio Aggregation Engine + Snapshot
+历史净值图表（Recharts 或 Tremor）
+
+Week 4：
+
+剩余协议 + Yield Opportunities
+错误处理、loading 状态、数据刷新机制
+测试 + 文档
+
+Week 5：
+
+UI/UX 抛光 + 移动端基本适配
+Architecture 文档 + Demo 视频准备
+Backfill 历史数据 + 性能优化
+
+
+最终建议：
+把 Indexing Pipeline + Portfolio Aggregation Engine + Adapter 体系 作为你的核心卖点，在简历和面试中反复强调。这三个模块能完美覆盖“系统设计、数据建模、Web3 工程、Clean Architecture”全部目标，且在 4-6 周内单人可控。

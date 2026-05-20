@@ -1,0 +1,282 @@
+作为一个用来求职的 DeFi Dashboard 作品集，面试官（通常是 Tech Lead 或 Senior Eng）最不想看到的是一个直接调用 RPC balanceOf 或依靠免费第三方 API（如 CoinGecko）拼凑出来的静态看板。
+
+要在 4~6 周内让面试官眼前一亮，你需要展示出处理链上异步数据不确定性、高并发吞吐、多源数据对齐，以及在单人开发约束下进行优雅抽象的能力。
+
+以下是针对你技术栈（Next.js + TS + Postgres + viem）的系统架构与设计方案。
+
+1. 推荐系统架构 (Clean Architecture)
+不要把所有的业务逻辑都塞到 Next.js 的 API Routes 里。我们需要一个经典的四层架构，将 区块链基础设施 与 业务逻辑 彻底解耦。
+
++------------------------------------------------------------+
+|             Frontend Layer (Next.js App Router)            |
+|       - UI Components (Radix / Tailwind)                   |
+|       - State Management (TanStack Query for caching)      |
++------------------------------------------------------------+
+                             |  JSON-RPC / REST
+                             v
++------------------------------------------------------------+
+|             Application Layer (Next.js API / Backend)      |
+|       - Use Cases (e.g., GetUserPortfolio, GetPoolROI)     |
+|       - DTOs & Validation (Zod)                            |
++------------------------------------------------------------+
+                             |
+                             v
++------------------------------------------------------------+
+|             Domain Layer (Pure TypeScript)                 |
+|       - Entities (Token, Position, Protocol, Balance)      |
+|       - Domain Services (ValueCalculator)                  |
+|       - Repository Interfaces                              |
++------------------------------------------------------------+
+                             |
+        +--------------------+--------------------+
+        |                                         |
+        v                                         v
++-------------------------------+   +------------------------+
+|  Infrastructure: Database    |   | Infrastructure: Web3   |
+|  - Prisma / Drizzle ORM       |   | - viem (Public Client) |
+|  - Postgres (Raw SQL Speed)   |   | - Subgraph / Multicall |
++-------------------------------+   +------------------------+
+🔴 关键权衡 (Trade-off)
+Next.js App Router vs. Separate Node.js Backend: 鉴于 4~6 周的时间限制，不要维护一个独立的 NestJS 服务。直接使用 Next.js App Router 配合 Serverless Functions / Edge Functions。
+
+代价： 长连接（如 WebSocket 监听链上事件）在 Serverless 环境下不适用。
+
+方案： 保持 Next.js 纯粹作为 API 和渲染层，将写操作（Indexing Pipeline）剥离为一个独立的极其简单的 Node.js 脚本，跑在便宜的 VPS（如 DigitalOcean）或 Github Actions / Cron Jobs 上。
+
+2. 最值得做的功能 vs. 最应该避免的复杂度
+✅ 最值得做的功能（面试官的兴奋点）
+带时序的资产看板 (Historical Net Worth & ROI): 不只展示“现在值多少钱”，而是展示“用户什么时候存的，扣除 Gas 费和无常损失（Impermanent Loss）后，真实的 ROI 是多少”。
+
+多池头寸聚合 (Uniswap V3 LP Position Aggregation): 解析 Uniswap V3 的非同质化代币（NFT）头寸，实时计算当前的 Token 比例、未领取的手续费，以及价格移出区间（Out-of-range）的预警。
+
+❌ 最应该避免的复杂度（浪费时间、对求职无益）
+自研跨链聚合 (Cross-chain Bridge Aggregation): 接入多条链（Arbitrum, Optimism, Base 等）并试图自己去算跨链桥状态。这需要维护庞大的节点池和复杂的分布式事务。应该只专注一到两条链（如 Ethereum Mainnet 或 Arbitrum）。
+
+酷炫的全套交易功能 (Trading UI): 写一套完美的 Swap 界面和 K 线图。面试官知道这只是调了 Uniswap SDK，没有任何后端或系统设计深度。
+
+3. 最能体现高级工程能力的模块：Multicall Aggregator
+在 DeFi 中，前端如果为每个代币余额或 LP 头寸都发起一次独立的 RPC 请求，会导致浏览器触发几百次 HTTP 请求，直接触发 RPC 节点的 Rate Limit（限流），且页面加载极慢。
+
+你需要在基础设施层实现一个 Dynamic Multicall Batcher。
+
+核心设计
+利用 viem 的 multicall 功能，将整个应用中散落在各个组件、各个业务线（Balances, Staking, LP）的链上读请求，在应用层进行时间和空间上的合流。
+
+代码架构示意
+TypeScript
+// src/infrastructure/web3/multicall-batcher.ts
+import { PublicClient, ContractFunctionParameters } from 'viem';
+
+export class MulticallBatcher {
+  private queue: Array<{
+    call: ContractFunctionParameters;
+    resolve: (value: any) => void;
+    reject: (reason: any) => void;
+  }> = [];
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(private client: PublicClient, private delayMs: number = 50) {}
+
+  async execute(call: ContractFunctionParameters): Promise<any> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ call, resolve, reject });
+      this.scheduleFlush();
+    });
+  }
+
+  private scheduleFlush() {
+    if (this.timer) return;
+    this.timer = setTimeout(() => this.flush(), this.delayMs);
+  }
+
+  private async flush() {
+    const currentQueue = [...this.queue];
+    this.queue = [];
+    this.timer = null;
+
+    if (currentQueue.length === 0) return;
+
+    try {
+      const results = await this.client.multicall({
+        contracts: currentQueue.map(q => q.call),
+        allowFailure: true,
+      });
+
+      results.forEach((res, index) => {
+        if (res.status === 'success') {
+          currentQueue[index].resolve(res.result);
+        } else {
+          currentQueue[index].reject(res.error);
+        }
+      });
+    } catch (error) {
+      currentQueue.forEach(q => q.reject(error));
+    }
+  }
+}
+面试官加分点： 这展示了你深刻理解 RPC 节点的瓶颈、浏览器网络连接并发限制，以及对异步队列机制（Batching & Debouncing）的熟练掌握。
+
+4. 如何设计 Adapter 层 (DeFi Protocol Adapter Pattern)
+由于不同 DeFi 协议（Uniswap, Aave, Lido）的智能合约接口和数据结构完全不同，如果你在 Controller 或 UI 层直接写死协议解析，代码会迅速腐烂。
+
+你必须使用 策略模式 (Strategy Pattern) 设计统一的协议适配器（Protocol Adapter）。
+
+领域模型设计
+定义统一的输出接口（Domain Entities）：
+
+TypeScript
+// src/domain/entities/portfolio.ts
+export interface ProtocolPosition {
+  protocolId: string;     // 'uniswap-v3', 'aave-v3'
+  positionId: string;     // NFT ID or deposit address
+  type: 'lp' | 'lending' | 'staking';
+  underlyingTokens: {
+    address: string;
+    symbol: string;
+    amount: bigint;
+    valueInUsd: number;
+  }[];
+  yieldRate: number;       // APY / APR
+}
+
+export interface IProtocolAdapter {
+  getPositions(userAddress: string): Promise<ProtocolPosition[]>;
+}
+基础设施层实现
+TypeScript
+// src/infrastructure/web3/adapters/aave-v3-adapter.ts
+import { IProtocolAdapter, ProtocolPosition } from '@/domain/entities/portfolio';
+import { MulticallBatcher } from '../multicall-batcher';
+
+export class AaveV3Adapter implements IProtocolAdapter {
+  constructor(private batcher: MulticallBatcher) {}
+
+  async getPositions(userAddress: string): Promise<ProtocolPosition[]> {
+    // 1. 调用 Aave UserDataProvider 智能合约
+    // 2. 转换成标准的 ProtocolPosition 结构
+    return [];
+  }
+}
+适配器工厂 (Registry)
+TypeScript
+// src/domain/services/portfolio-manager.ts
+export class PortfolioManager {
+  private adapters: Map<string, IProtocolAdapter> = new Map();
+
+  registerAdapter(protocolId: string, adapter: IProtocolAdapter) {
+    this.adapters.set(protocolId, adapter);
+  }
+
+  async aggregate(userAddress: string): Promise<ProtocolPosition[]> {
+    const promises = Array.from(this.adapters.values()).map(adapter => 
+      adapter.getPositions(userAddress).catch(err => {
+        console.error(`Adapter failed`, err);
+        return []; // 容错：单个协议挂了，不影响整体看板加载
+      })
+    );
+    const results = await Promise.all(promises);
+    return results.flat();
+  }
+}
+5. 如何设计 Indexing Pipeline
+不要试图实时从链上拉取所有历史事件（Event Logs）来算历史收益率。必须把在线查询 (OLAP/OLTP) 和 数据抓取 (Ingestion) 分离。
+
+由于我们不使用 Graph Protocol 这一套相对沉重的基础设施，我们需要用纯 TypeScript 在 Postgres 上自己实现一个 Mini Indexer。
+
+数据库设计：确保幂等性与可追溯性
+SQL
+CREATE TABLE indexed_blocks (
+    block_number BIGINT PRIMARY KEY,
+    indexed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE protocol_events (
+    id TEXT PRIMARY KEY, -- blockNumber_logIndex_txHash (防止重复插入)
+    block_number BIGINT NOT NULL,
+    tx_hash TEXT NOT NULL,
+    protocol_id TEXT NOT NULL,
+    user_address TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    args JSONB NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL
+);
+CREATE INDEX idx_events_user ON protocol_events(user_address);
+核心 Indexing 机制
+编写一个脚本，在后台定时或者按区块区间执行：
+
+获取最新区块，对比数据库中最大的 block_number。
+
+使用 viem 的 getLogs 分批拉取事件（例如每次处理 2000 个区块，防止超出节点限制）。
+
+批量写入 (Upsert): 使用 INSERT ... ON CONFLICT DO NOTHING 保证幂等性。如果在写入中途崩溃，重启脚本可以安全地从最后一个成功完成的区块重新跑。
+
+6. 如何做 Portfolio Aggregation (资产对齐与定价)
+当你有了一条链上所有的原生余额、ERC20 余额、DeFi 头寸后，如何把它们变成一个美刀（USD）总额？这是面试官最喜欢抠细节的地方。
+
+资产对齐三步走
+标准化精度 (Normalization): 链上所有代币数额都是 bigint（如 USDT 是 6 位精度，WETH 是 18 位）。在进入领域模型前，通过统一的工具函数转换。切记：在所有核心计算中保持 bigint，只有在最后乘以美刀价格输出给前端时才转换为 JavaScript number（防止精度丢失）。
+
+定价源路由 (Price Feeds Routing):
+
+主流币（WETH, WBTC, Stablecoins）: 直接通过 Aave Oracle 智能合约或 Chainlink Price Feed 在链上拉取最新的价格。
+
+长尾币（无 Chainlink Feed）: 编写一个 UniswapV3PriceOracle，通过调用 Uniswap V3 Pool 的 slot0 获取 sqrtPriceX96，在链上直接实时计算相对价格。
+
+多源并发聚合: 采用 Promise.allSettled 并行请求各协议适配器，设定硬性超时时间（如 3 秒）。如果有某个慢协议未返回，依旧降级渲染其余数据。
+
+7. 如何在项目中体现“工程成熟度”
+防灾与优雅降级 (Graceful Degradation): 如果 RPC 节点挂了、或者 Chainlink 喂价超时，你的系统不能直接抛出 500。界面上应该能显示“部分数据更新失败，展示缓存数据”，后端应该有 Fallback RPC 节点机制（主节点失败后自动切换到备用 Alchemy/Infura 节点）。
+
+严格的防溢出与大数处理: 整个应用中找不到任何一处将未经处理的链上 uint256 直接 Number(balance) 的愚蠢操作。
+
+数据库连接池管理: 在 Next.js Serverless 环境中，频繁的 API 调用会导致 Postgres 连接数瞬间爆满。你必须配置 Connection Pooler（如 Prisma Accelerate 或 Supabase Supavisor），并在代码中正确释放连接。
+
+端到端类型安全 (End-to-End Type Safety): 智能合约的 ABI 使用 viem 的 as const 声明，使得合约读写在 TS 编译期就能自动校验入参和出参类型。
+
+8. 面试官会重点追问什么 (System Review Defence)
+在拿到这个项目后，技术面试官最有可能问你这三个硬核问题：
+
+Q1: 链上发生大范围重组（Block Reorg）时，你的 Indexer 里的历史数据就会变成脏数据，你怎么处理？
+
+标答： “为了保持 MVP 的简单性，目前我的 Indexer 在获取日志时设置了 Block Confirmations = 12（即只同步 12 个区块确认之前的历史数据）。对于更高级的架构，我会在 protocol_events 表中引入 status 字段，并在同步时保留最近 N 个区块的 Hash 映射，一旦发现 parentHash 不匹配，触发本地回滚（Rollback）逻辑。”
+
+Q2: 如果用户在 Uniswap V3 里的头寸非常复杂，而前端页面加载要求在 800ms 内，你如何设计缓存策略？
+
+标答： “我采用了多级缓存。最底层是链上实时读，通过 Multicall Batching 降低网络往返延迟。第二层是应用层缓存，使用 Redis（或 Memory Cache）缓存用户的标准化 Domain Entities，过期时间设为 12 秒（约一个 Ethereum 区块时间）。第三层是前端使用 TanStack Query 的 staleTime，在用户切屏或频繁操作时防止重复请求后端。”
+
+9. 4 周 Realistic MVP Roadmap
+不要试图一开始就做完美。这是你唯一的单人开发演进路线：
+
+📅 Week 1: 领域模型与 Web3 基础设施
+搭建 Next.js + TS 项目。
+
+编写 MulticallBatcher 和通用 RPC 客户端。
+
+设计 Domain 层核心实体类（Token, Position, WalletBalance）。
+
+产出： 一个可以通过输入钱包地址，并发用 Multicall 查出所有主流 ERC20 余额的 CLI 脚本或极简 API。
+
+📅 Week 2: DeFi 协议适配器层 (Adapter Layer)
+实现 IProtocolAdapter 接口。
+
+编写第一个适配器：LidoAdapter（最简单，只要读 stETH 余额）。
+
+编写第二个适配器：AaveV3Adapter（进阶，读取借贷仓位）。
+
+产出： 后端可以稳定聚合多个协议的实时持仓。
+
+📅 Week 3: 时序数据与 Indexer Pipeline
+设计 Postgres 数据库表结构。
+
+编写独立的 Indexer 脚本，监听特定用户的历史转账和存取事件，存入数据库。
+
+编写历史净值计算服务（结合历史事件与当时的价格快照）。
+
+产出： 数据库能够提供可靠的历史资产走势线。
+
+📅 Week 4: 前端组装、容错与打磨
+用 Next.js App Router 编写前端看板，接入 Tailwind 与图表库（如 Recharts 绘制净值曲线）。
+
+加入 Zod 进行 API 入参校验，做好 RPC 容错和 Fallback。
+
+写一份漂亮的 README，重点画出你的系统架构图，并专门开辟一章陈述你的设计权衡（Trade-offs）。
