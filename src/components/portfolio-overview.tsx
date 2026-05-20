@@ -3,6 +3,7 @@
 interface PortfolioOverviewProps {
   data: {
     totalUsd: number;
+    snapshotTimestamp?: string;
     tokenBalances: Array<{ token: { symbol: string }; valueInUsd: number }>;
     allocationByToken: Array<{ symbol: string; valueUsd: number; percentage: number }>;
     allocationByProtocol: Array<{ protocolId: string; valueUsd: number; percentage: number }>;
@@ -22,7 +23,14 @@ export function PortfolioOverview({ data }: PortfolioOverviewProps) {
   return (
     <div className="rounded-xl border border-card-border bg-card p-6">
       <div className="mb-6">
-        <p className="text-sm text-gray-400">Total Portfolio Value</p>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-gray-400">Total Portfolio Value</p>
+          {data.snapshotTimestamp && (
+            <p className="text-xs text-gray-500">
+              Updated {new Date(data.snapshotTimestamp).toLocaleTimeString()}
+            </p>
+          )}
+        </div>
         <p className="text-4xl font-bold mt-1 tracking-tight">
           {formatUsd(data.totalUsd)}
         </p>

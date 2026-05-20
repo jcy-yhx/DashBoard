@@ -1,5 +1,7 @@
 "use client";
 
+import { HealthFactorBadge } from "./health-factor-badge";
+
 interface Position {
   protocolId: string;
   type: "lending" | "borrowing" | "lp" | "staking";
@@ -48,35 +50,37 @@ export function PositionsList({ positions }: PositionsListProps) {
             (sum, ut) => sum + (ut.valueInUsd ?? 0),
             0,
           );
+          const healthFactor = pos.metadata?.healthFactor as number | null | undefined;
 
           return (
             <div key={pos.positionId} className="px-6 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium capitalize">
-                      {pos.protocolId.replace("-", " ")}
-                    </span>
-                    <span className={`text-xs font-medium ${label.color}`}>
-                      {label.text}
-                    </span>
-                  </div>
-                  <div className="flex gap-2 mt-0.5">
-                    {pos.underlyingTokens.map((ut, i) => (
-                      <span key={i} className="text-xs text-gray-500">
-                        {Number(ut.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
-                        {ut.token.symbol}
-                      </span>
-                    ))}
-                  </div>
-                  {Boolean(pos.metadata?.outOfRange) && (
-                    <span className="text-xs text-yellow-400 mt-0.5 block">
-                      Out of range
-                    </span>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium capitalize">
+                    {pos.protocolId.replace("-", " ")}
+                  </span>
+                  <span className={`text-xs font-medium ${label.color}`}>
+                    {label.text}
+                  </span>
+                  {healthFactor != null && (
+                    <HealthFactorBadge healthFactor={healthFactor} />
                   )}
                 </div>
+                <div className="flex gap-2 mt-0.5">
+                  {pos.underlyingTokens.map((ut, i) => (
+                    <span key={i} className="text-xs text-gray-500">
+                      {Number(ut.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
+                      {ut.token.symbol}
+                    </span>
+                  ))}
+                </div>
+                {Boolean(pos.metadata?.outOfRange) && (
+                  <span className="text-xs text-yellow-400 mt-0.5 block">
+                    Out of range
+                  </span>
+                )}
               </div>
-              <span className="text-sm font-medium">{formatUsd(totalUsd)}</span>
+              <span className="text-sm font-medium ml-4 shrink-0">{formatUsd(totalUsd)}</span>
             </div>
           );
         })}
