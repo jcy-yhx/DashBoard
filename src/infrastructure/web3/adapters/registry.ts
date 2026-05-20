@@ -16,6 +16,10 @@ export class AdapterRegistry {
     return this.adapters.get(protocolId);
   }
 
+  listAdapters(): IProtocolAdapter[] {
+    return Array.from(this.adapters.values());
+  }
+
   async aggregatePositions(address: string, chainId: number): Promise<ProtocolPosition[]> {
     const adapters = Array.from(this.adapters.values()).filter((a) =>
       a.supportedChains.includes(chainId),
