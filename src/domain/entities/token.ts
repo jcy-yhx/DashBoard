@@ -10,5 +10,5 @@ export interface Token {
 export interface TokenBalance {
   readonly token: Token;
   readonly balance: bigint;
-  readonly valueInUsd: number | null;
+  valueInUsd: number | null; // mutable — assigned after price lookup
 }

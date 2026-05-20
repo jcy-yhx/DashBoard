@@ -5,7 +5,7 @@ export type PositionType = "lending" | "borrowing" | "lp" | "staking";
 export interface UnderlyingToken {
   readonly token: Token;
   readonly amount: bigint;
-  readonly valueInUsd: number | null;
+  valueInUsd: number | null; // mutable — assigned after price lookup
 }
 
 export interface ProtocolPosition {

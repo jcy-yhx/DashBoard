@@ -12,7 +12,11 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
-function loadEnv(): Env {
+let _env: Env | null = null;
+
+export function getEnv(): Env {
+  if (_env) return _env;
+
   const parsed = envSchema.safeParse({
     RPC_URL_ETHEREUM: process.env.RPC_URL_ETHEREUM,
     RPC_URL_ETHEREUM_FALLBACK: process.env.RPC_URL_ETHEREUM_FALLBACK,
@@ -25,11 +29,10 @@ function loadEnv(): Env {
   });
 
   if (!parsed.success) {
-    console.error("❌ Invalid environment variables:", parsed.error.issues);
+    console.error("Invalid environment variables:", parsed.error.issues);
     throw new Error("Invalid environment configuration");
   }
 
-  return parsed.data;
+  _env = parsed.data;
+  return _env;
 }
-
-export const env = loadEnv();
